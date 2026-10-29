@@ -8,7 +8,7 @@
 - The numbers in the folder names are lab numbers, which roughly follow the days of the plan.
 - I wrote this README myself. AI was used only to proofread my English.
 - Feel free to use this repository as study material.
-- 
+
 ## Experiments
 
 ### 01-escape: stack vs. heap (escape analysis) 
@@ -49,3 +49,48 @@ Results are based on the output:
 01-escape/main.go:26:2: moved to heap: u
 01-escape/main.go:32:11: make([]int, 100000) escapes to heap
 ```
+
+### 02-gc: The garbage collector 
+
+**Goal**: see how GOGC and GOMEMLIMIT change how often the GC runs.
+
+**Execution**: run `$env:GOGC="xx"; go run ./02-gc` - where xx is a value from [50, 100, 400, off].
+
+Then also run `$env:GOGC="off"; $env:GOMEMLIMIT="30MiB"; go run ./02-gc` and `$env:GODEBUG="gctrace=1"; go run ./02-gc`
+
+**Results**:
+
+There are two common ways to affect how often GC runs (both involve environment variables):
+- GC - you specify how much a live heap can grow in percentage comparing to the previous live heap. Works a bit more strictly than GOMEMLIMIT
+- GOMEMLIMIT - you specify "the soft ceiling" for a live heap and when it grows up to around that memory amount - GC runs.
+
+In the experiment, the total amount of allocated memory is 157 MB. 
+In the table, you can see how every variable value affects how frequently GC is run:
+
+| env                 | time (ms) | number of GC cycles | heap allocations (MB)   | total time of pauses |
+|---------------------|-----------|---------------------|-------------------------|----------------------|
+| GOGC=50             | 388.7821  | 135                 | 3                       | 8.243ms              |
+| GOGC=100            | 207.0329  | 59                  | 6                       | 5.1259ms             |
+| GOGC=400            | 177.7891  | 11                  | 11                      | 989.4µs              |
+| GOGC=off            | 194.4756  | 0                   | 157 (as in total alloc) | 0s                   |
+| GOMEMLIMIT="30MiB"  | 2.0456946 | 789                 | 3                       | 56.9069ms            |
+
+GC has 2 concurrent and 2 stop-the-world (STW) phases. They go roughly in this order: Sweep Termination -> Mark -> Mark Termination -> Sweep.
+Termination phases are STW (but they take less than 1ms in general), whereas the others are concurrent.
+In the output of `$env:GODEBUG="gctrace=1"; go run ./02-g` commands we can see how much exactly every phase took:
+```
+gc 1 @0.066s 0%: 0+2.6+0 ms clock, 0+0/2.7/0+0 ms cpu, 3->4->1 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 16 P
+gc 2 @0.075s 0%: 0+3.2+0 ms clock, 0+1.5/7.3/0+0 ms cpu, 3->4->1 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 16 P
+gc 3 @0.084s 2%: 0+5.2+0.55 ms clock, 0+1.5/9.5/0.58+8.8 ms cpu, 3->4->1 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 16 P
+gc 4 @0.099s 2%: 0.54+2.6+0 ms clock, 8.7+0/5.9/3.7+0 ms cpu, 3->5->2 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 16 P
+gc 5 @0.105s 2%: 0+1.7+0.57 ms clock, 0+0.56/2.8/0.56+9.2 ms cpu, 4->4->1 MB, 5 MB goal, 0 MB stacks, 0 MB globals, 16 P
+gc 6 @0.139s 1%: 0.50+1.0+0 ms clock, 8.0+0/2.0/0+0 ms cpu, 3->4->2 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 16 P
+gc 7 @0.143s 2%: 0+1.8+0 ms clock, 0+1.0/4.6/1.6+0 ms cpu, 4->5->2 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 16 P
+...
+```
+Looking at `0+5.2+0.55 ms clock` part of the output we see that Sweep Termination took 0s, Marking took 5.2ms and Mark Termination took 0.55ms.
+You also can tell how well your program is doing by looking at what the memory levels were before and after GC in this part: `3->4->1 MB`.
+First number is heap size before GC, second - after GC and third - amount of live data. You also can spot a leak here, if the third number is constantly growing!
+
+The trade-off of GC is how fast your code runs. Keeping memory low costs a lot of CPU power, that could be used for running your code.
+So I would mainly tweak GOGC number if GC runs too frequently. But if I get `OOM killed` message - then I would adjust GOMEMLIMIT.
